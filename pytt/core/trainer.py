@@ -1,14 +1,14 @@
-import gc 
+import gc
 import sys
-import numpy as np
+from typing import Callable
 
+import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
-
-from hooks import HookList, Hook
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm_notebook as tqdm
-from typing import Callable
+
+from .base_hook import Hook, HookList
 
 class Trainer(object):
     def __init__(self, model:nn.Module, optimizer:torch.optim.Optimizer, loss_fn:Callable, hooks:HookList=None):
@@ -16,6 +16,7 @@ class Trainer(object):
         if hooks is None:
             hooks = HookList([Hook()])
         self.hooks = hooks
+        self.hooks.set_trainer(self)
         self.stop = False
         self.optimizer = optimizer
         self.loss_fn = loss_fn
@@ -24,7 +25,7 @@ class Trainer(object):
         torch.cuda.empty_cache()
         gc.collect()
 
-    def fit(self, epochs:int, train, valid=None, batch_sz=32, batch_sz_valid=None, shuffle=True, sampler=None) -> None:
+    def fit(self, epochs:int, train, valid=None, batch_sz=32, batch_sz_valid=None, shuffle=True, sampler=None, num_workers=4) -> None:
 
         self.hooks.on_fit_begin()
 
@@ -36,7 +37,7 @@ class Trainer(object):
             if train is not None:
                 self.hooks.on_train_begin()
                 self._train_loop(data=train, loss_fn=self.loss_fn, optimizer=self.optimizer, 
-                    batch_sz=batch_sz, shuffle=shuffle, sampler=sampler)
+                    batch_sz=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=num_workers)
                 self.hooks.on_train_end()
 
             if valid is not None:
@@ -51,12 +52,12 @@ class Trainer(object):
         self._train_loop(data=valid, loss_fn=self.loss_fn, optimizer=None, batch_sz=batch_sz, shuffle=False)
         self.hooks.on_validation_end()
 
-    def _train_loop(self, data, optimizer=None, loss_fn=None, batch_sz=32, shuffle=True, sampler=None) -> None:
+    def _train_loop(self, data, optimizer=None, loss_fn=None, batch_sz=32, shuffle=True, sampler=None, num_workers=4) -> None:
         shuffle = shuffle and sampler is None
         self.clean()
         # for data in tqdm(DataLoader(data, batch_size=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=4),  leave=False):
         # tqdm has a problem with notebooks and a second inner loop
-        for b, data in enumerate(DataLoader(data, batch_size=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=4)):
+        for b, data in enumerate(DataLoader(data, batch_size=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=num_workers)):
             if self.stop:
                 break
             data = self.hooks.on_batch_begin(b, data) 

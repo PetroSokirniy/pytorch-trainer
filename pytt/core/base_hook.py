@@ -1,6 +1,14 @@
 from typing import List, Tuple, Any, Dict, Callable
 
 class Hook(object):
+    def __init__(self, trainer=None, hook_list=None):
+        self.trainer = trainer
+        self.hook_list = hook_list
+
+    def set_trainer(self, trainer): self.trainer = trainer
+
+    def set_hook_list(self, hook_list): self.hook_list = hook_list
+
     def on_fit_begin(self) -> None: pass
 
     def on_fit_end(self) -> None: pass
@@ -28,6 +36,11 @@ class Hook(object):
 class _HookList(Hook):
     def __init__(self, hooks:List[Hook]):
         self.hooks = hooks
+        for h in hooks: h.set_hook_list(self)
+
+    def set_trainer(self, trainer): 
+        self.trainer = trainer
+        for h in self.hooks: h.set_trainer(trainer)
 
     def on_fit_begin(self) -> None:
         for h in self.hooks: h.on_fit_begin()
