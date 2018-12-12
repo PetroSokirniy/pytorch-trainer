@@ -86,7 +86,7 @@ class StatTracker(Hook):
         return {k:self.stats[k][idx] for k in self.stats.keys()}
 
     def __len__(self):
-        return len(self.stats['epoch'])
+        return min([len(self.stats[k]) for k in self.stats.keys()])
 
     def restart(self):
         self._restart = True
@@ -102,12 +102,13 @@ class PrintHook(Hook):
         self.custom = custom 
         self.print_hist = print_hist 
     
-    def on_train_begin(self):
+    def on_fit_begin(self):
         if self.stat_tracker is None:
            self.stat_tracker = self.hook_list.dict_hooks[StatTracker.__name__]
+
         if self.print_hist:
             for idx in range(len(self.stat_tracker)):
-                print(self.stat_tracker[idx])
+                self.print(self.stat_tracker[idx])
 
     def on_epoch_end(self, e:int):
         self.print(self.stat_tracker.get_last_stats(), self.keys)
