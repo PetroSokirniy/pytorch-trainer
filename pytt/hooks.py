@@ -95,17 +95,19 @@ class StatTracker(Hook):
 
 class PrintHook(Hook):
     def __init__(self, stat_tracker:StatTracker=None, keys=['model','epoch', 't_loss', 'v_loss', 't_acc', 'v_acc'],
-          custom:Dict[str,Tuple[str,Callable]]={}):
+          custom:Dict[str,Tuple[str,Callable]]={}, print_hist=True):
         super().__init__(self.__class__.__name__)
         self.stat_tracker = stat_tracker
         self.keys = keys
         self.custom = custom 
+        self.print_hist = print_hist 
     
     def on_train_begin(self):
         if self.stat_tracker is None:
            self.stat_tracker = self.hook_list.dict_hooks[StatTracker.__name__]
-
-        for 
+        if self.print_hist:
+            for idx in range(len(self.stat_tracker)):
+                print(self.stat_tracker[idx])
 
     def on_epoch_end(self, e:int):
         self.print(self.stat_tracker.get_last_stats(), self.keys)
