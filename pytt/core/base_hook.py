@@ -1,10 +1,11 @@
 from typing import List, Tuple, Any, Dict, Callable
 
 class Hook(object):
-    def __init__(self, trainer=None, hook_list=None):
+    def __init__(self, name:str=None, trainer=None, hook_list=None):
+        self.name = name
         self.trainer = trainer
         self.hook_list = hook_list
-
+        
     def set_trainer(self, trainer): self.trainer = trainer
 
     def set_hook_list(self, hook_list): self.hook_list = hook_list
@@ -36,6 +37,8 @@ class Hook(object):
 class _HookList(Hook):
     def __init__(self, hooks:List[Hook]):
         self.hooks = hooks
+        self.dict_hooks = {h.name:h for h in hooks if h.name is not None}
+        self.hook_list = self
         for h in hooks: h.set_hook_list(self)
 
     def set_trainer(self, trainer): 
@@ -77,18 +80,32 @@ class _HookList(Hook):
         for h in self.hooks: data = h.on_output_data(data)
         return data
 
+    def __len__(self) -> int:
+        return len(self.hooks)
+
+    def __getitem__(self, idx) -> Hook:
+        if isinstance(idx, int):
+            return self.hooks[idx]
+        elif isinstance(idx, str):
+            return self.dict_hooks[idx]
+        raise TypeError("idx has to be either a string or int")
+            
+
 class HookList(_HookList):
     def __add__(self, other) -> Any:
-        if isinstance(other, Hook):
-            return HookList(self.hooks + [other])
-        elif isinstance(other, _HookList):
+        if isinstance(other, _HookList):
             return HookList(self.hooks + other.hooks)
+        elif isinstance(other, Hook):
+            return HookList(self.hooks + [other])
         raise TypeError("other has to be either a Hook or HookList")
 
-    def __iadd__(self, other:_HookList) -> None:
-        if isinstance(other, Hook):
-            self.hooks += [other]
-        elif isinstance(other, _HookList):
+    def __iadd__(self, other) -> None:
+        if isinstance(other, _HookList):
             self.hooks += other.hooks
+            self.dict_hooks.update(other.dict_hooks)
+        elif isinstance(other, Hook):
+            self.hooks += [other]
+            if other.name != None:
+                self.dict_hooks[other.name] = other
         else:
             raise TypeError("other has to be either a Hook or HookList")
