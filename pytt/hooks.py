@@ -1,5 +1,6 @@
 from .core import Hook, HookList
 from .utils import adjust_learning_rate
+from .core import Trainer
 
 import sys
 import os
@@ -103,7 +104,7 @@ class PrintHook(Hook):
 
     def print(self, stats:Dict[str,Any], keys=None):
         if keys is None and self.keys is not None: keys = self.keys
-        if keys is None: keys = [k for k in stats.keys() if isinstance(k, int) or isinstance(k, float)]
+        if keys is None: keys = [k for k in stats.keys() if 'int' in str(type(k)) or 'float' in str(type(k))]
         p_str  = ''
         for key in keys:
             if 'float' in str(type(stats[key])):
@@ -196,17 +197,21 @@ class SaveBestHook(CheckPointHook):
 
 
 class EndEarlyHook(Hook):
-    def __init__(self, tracker:StatTracker, trainer, key:str='v_acc', wait:int=10, best_func:Callable=np.max):
+    def __init__(self, key:str='v_acc', wait:int=10, best_func:Callable=np.max, stat_tracker:StatTracker=None, trainer:Trainer=None):
         super().__init__(self.__class__.__name__)
-        self.tracker = tracker
+        self.stat_tracker = stat_tracker
         self.trainer = trainer
         self.key = key
         self.wait = wait
         self.best_func = best_func
 
+    def on_train_begin(self):
+        if self.stat_tracker is None:
+           self.stat_tracker = self.hook_list.dict_hooks[StatTracker.__name__]
+
     def on_epoch_end(self, e:int) -> None:
-        best = self.best_func(self.tracker.stats[self.key])
-        last = self.best_func(self.tracker.stats[self.key][-self.wait:])
+        best = self.best_func(self.stat_tracker.stats[self.key])
+        last = self.best_func(self.stat_tracker.stats[self.key][-self.wait:])
         if (best >= self.best_func(last)).sum() > 0:
             self.trainer.stop = True
 
