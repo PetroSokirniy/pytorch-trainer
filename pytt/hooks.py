@@ -82,6 +82,12 @@ class StatTracker(Hook):
     def get_last_stats(self) -> Dict[str, float]:
         return {k:self.stats[k][-1] for k in self.stats.keys()}
 
+    def __getitem__(self, idx:int):
+        return {k:self.stats[k][idx] for k in self.stats.keys()}
+
+    def __len__(self):
+        return len(self.stats['epoch'])
+
     def restart(self):
         self._restart = True
         self.stats = defaultdict(list)
@@ -98,6 +104,8 @@ class PrintHook(Hook):
     def on_train_begin(self):
         if self.stat_tracker is None:
            self.stat_tracker = self.hook_list.dict_hooks[StatTracker.__name__]
+
+        for 
 
     def on_epoch_end(self, e:int):
         self.print(self.stat_tracker.get_last_stats(), self.keys)
