@@ -103,9 +103,11 @@ class HookList(_HookList):
         if isinstance(other, _HookList):
             self.hooks += other.hooks
             self.dict_hooks.update(other.dict_hooks)
+            return self
         elif isinstance(other, Hook):
             self.hooks += [other]
             if other.name != None:
                 self.dict_hooks[other.name] = other
+            return self
         else:
             raise TypeError("other has to be either a Hook or HookList")

@@ -2,11 +2,14 @@ from .core import Hook, HookList
 from .utils import adjust_learning_rate
 from .core import Trainer
 
-import sys
 import os
+import sys
+import time
+import itertools
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm_notebook as tqdm
 
 import torch
 from torch import nn
@@ -32,6 +35,73 @@ class DelTensor(Hook):
             if isinstance(v, torch.Tensor):
                 del v
 
+class GetDataHook(Hook):
+    def __init__(self, keys):
+        super().__init__(self.__class__.__name__)
+        self.keys = keys
+        self.data = defaultdict(list)
+
+    def on_output_data(self, data:Dict[str,Any]) -> Dict[str,Any]: 
+        for key in self.keys:
+            if isinstance(data[key], torch.Tensor):
+                value = data[key].cpu().detach().numpy()
+            else:
+                value = data[key]
+            self.data[key].append(value)
+        return data
+
+class SplitDataHook(GetDataHook):
+    def __init__(self, keys, on_train=False, on_valid=True):
+        super().__init__(keys)
+        self.keys = keys
+        self.train = defaultdict(list)
+        self.valid = defaultdict(list)
+        self.data = None
+
+    def on_train_begin(self) -> None: 
+        self.data = self.train
+
+    def on_train_end(self) -> None: 
+        self.data = None
+
+    def on_validation_begin(self) -> None: 
+        self.data = self.valid
+
+    def on_validation_end(self) -> None:
+        self.data = None
+
+class TimerHook(Hook):
+    def __init__(self):
+        super().__init__(self.__class__.__name__)
+        self.train_time = []
+        self.valid_time = []
+        self.batch_time = None
+        self.train_batch_time = []
+        self.valid_batch_time = []
+        
+
+    def on_train_begin(self) -> None: 
+        self.train_begin = time.time()
+        self.batch_time = self.train_batch_time
+
+    def on_train_end(self) -> None: 
+        self.train_end = time.time()
+        self.train_time.append(time.time() - self.train_begin)
+
+    def on_validation_begin(self) -> None: 
+        self.valid_begin = time.time()
+        self.batch_time = self.valid_batch_time
+
+    def on_validation_end(self) -> None: 
+        self.valid_time.append(time.time() - self.valid_begin)
+
+    def on_batch_begin(self, b:int, data:Dict[str,Any]) -> Dict[str,Any]:
+        self.batch_begin = time.time()
+        return data
+
+    def on_batch_end(self, b:int, data:Dict[str,Any]) -> None: 
+        self.batch_time.append(time.time() - self.batch_begin)
+
 class StatTracker(Hook):
     def __init__(self, collect_stats:Dict[str,Callable[[Dict], float]],  save_csv:str=None, prefix_train:str='t_', prefix_valid:str='v_', model_n:int=0):
         super().__init__(self.__class__.__name__)
@@ -44,7 +114,7 @@ class StatTracker(Hook):
         self._restart = False
         
     def on_fit_begin(self):
-        if not self._restart:
+        if not self._restart and self.save_csv is not None:
             self.from_csv(self.save_csv)
     
     def on_train_begin(self) -> None:
@@ -86,12 +156,63 @@ class StatTracker(Hook):
         return {k:self.stats[k][idx] for k in self.stats.keys()}
 
     def __len__(self):
-        return min([len(self.stats[k]) for k in self.stats.keys()])
+        all_lens = [len(self.stats[k]) for k in self.stats.keys()]
+        return min(all_lens) if len(all_lens) > 0 else 0
 
     def restart(self):
         self._restart = True
         self.stats = defaultdict(list)
         return self
+
+class ValidTrainer(Hook):
+    def __init__(self, tracker:StatTracker, train, valid, tolerance:float=0.05, max_epochs:int=None, t_key='t_loss', v_key='v_loss', params:dict={}):
+        super().__init__(self.__class__.__name__)
+        self.tracker = tracker
+        self.train = train
+        self.valid = valid
+        self.tolerance = tolerance
+        self.max_epochs = max_epochs
+        self.t_key = t_key
+        self.v_key = v_key
+        self.params = params
+        self.start = True
+
+    def on_fit_end(self):
+        if not self.start:
+            return 
+        self.start = False
+
+        target = self.tracker.get_last_stats[self.t_key]
+        value = self.tracker.get_last_stats[self.v_key]
+
+        while target < value - self.tolerance :
+            self.trainer.fit(1, self.train + self.valid, self.valid, **self.params)
+            value = self.tracker.get_last_stats[self.v_key]
+
+class TTAHook(GetDataHook):
+    def __init__(self, data_set, transforms, batch_size=32, keys=[]):
+        super().__init__(keys)
+        self.data_set = data_set
+        self.transforms = transforms
+        self.batch_size = batch_size 
+        self.keys = keys
+        self.datas = []
+
+    def run(self):
+        for t in tqdm(self.transforms):
+            self.data_set.tsfrm = t
+            self.data = defaultdict(list)
+            self.trainer.run(self.data_set, batch_sz=self.batch_size, shuffle=False)
+            self.datas.append(self.data)
+
+    def on_fit_end(self):
+        self.run()
+            
+    def __getitem__(self, key):
+        return self.get_results(key)
+    
+    def get_results(self, key):
+        return np.column_stack([np.concatenate(d[key]) for d in self.datas])
 
 class PrintHook(Hook):
     def __init__(self, stat_tracker:StatTracker=None, keys=['model','epoch', 't_loss', 'v_loss', 't_acc', 'v_acc'],
@@ -201,7 +322,7 @@ class SaveBestHook(CheckPointHook):
             self.save_model(self.path_b)
 
     def restart(self):
-        s = super().restart()
+        super().restart()
         if self.path_b is not None and os.path.exists(self.path_b):
             os.remove(self.path_b)
         return self
