@@ -216,12 +216,13 @@ class TTAHook(GetDataHook):
 
 class PrintHook(Hook):
     def __init__(self, stat_tracker:StatTracker=None, keys=['model','epoch', 't_loss', 'v_loss', 't_acc', 'v_acc'],
-          custom:Dict[str,Tuple[str,Callable]]={}, print_hist=True):
+          custom:Dict[str,Tuple[str,Callable]]={}, print_hist=True, stats_per_line=8):
         super().__init__(self.__class__.__name__)
         self.stat_tracker = stat_tracker
         self.keys = keys
         self.custom = custom 
-        self.print_hist = print_hist 
+        self.print_hist = print_hist
+        self.stats_per_line = stats_per_line
     
     def on_fit_begin(self):
         if self.stat_tracker is None:
@@ -234,18 +235,28 @@ class PrintHook(Hook):
     def on_epoch_end(self, e:int):
         self.print(self.stat_tracker.get_last_stats(), self.keys)
 
-    def print(self, stats:Dict[str,Any], keys=None):
+    def print(self, stats:Dict[str,Any], keys=None, stats_per_line=None):
         if keys is None and self.keys is not None: keys = self.keys
         if keys is None: keys = [k for k in stats.keys() if 'int' in str(type(k)) or 'float' in str(type(k))]
+        if stats_per_line is None: stats_per_line = self.stats_per_line
+        i = 0
         p_str  = ''
         for key in keys:
             if 'float' in str(type(stats[key])):
                 p_str += f'{key}:{stats[key]:0.3f} '
             else:
                 p_str += f'{key}:{stats[key]} '
+            i += 1
+            if i > stats_per_line:
+                p_str += '\n\t'
+                i = 0
 
         for key,value in self.custom.items():
             p_str += f'{key}:{value[1](self.stat_tracker.stats[value[0]]):0.3f} ' 
+            i += 1
+            if i > stats_per_line:
+                p_str += '\n\t'
+                i = 0
         print(p_str)
         sys.stdout.flush()
 
