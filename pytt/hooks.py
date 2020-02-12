@@ -7,16 +7,19 @@ import sys
 import time
 import itertools
 
+import cv2
 import numpy as np
 import pandas as pd
 from tqdm import tqdm_notebook as tqdm
 
 import torch
 from torch import nn
+import torchvision.utils as vutils
 
 from typing import List, Tuple, Any, Dict, Callable
 from collections import defaultdict
 
+import asyncio
 
 class DataPrep(Hook):
     def __init__(self, device='cuda'):
@@ -26,6 +29,140 @@ class DataPrep(Hook):
     def on_batch_begin(self, b:int, data:Dict[str,Any]) -> Dict[str,Any]:
         return {k:v.float().to(self.device) if isinstance(v, torch.Tensor) else v for k,v in data.items()}
 
+
+class OptWalker(Hook):
+    def __init__(self, opti, lr):
+        super().__init__(self.__class__.__name__)
+        self.opti = opti
+        self.lr = lr
+        self.i = 0
+        for g in self.opti.param_groups:
+            g['lr'] = 0
+
+    def on_batch_begin(self, b:int, data:Dict[str,Any]) -> Dict[str,Any]:
+        self.opti.param_groups[self.i - 1]['lr'] = 0
+        self.opti.param_groups[self.i]['lr'] = self.lr
+        self.i = (self.i + 1) % len(self.opti.param_groups)
+
+        return data
+
+class ReqGradHook(Hook):
+    def __init__(self, keys=['img']):
+        super().__init__(self.__class__.__name__)
+        self.keys = keys
+
+    def on_batch_begin(self, b:int, data:Dict[str,Any]) -> Dict[str,Any]:
+        for k in self.keys:
+            data[k].requires_grad = True
+        return data
+
+class TransposeHook(Hook):
+    def __init__(self, keys=['img', 'mask'], p = 0.5, allow_key='stage'):
+        super().__init__(self.__class__.__name__)
+        self.keys = keys
+        self.p = p
+        self.allow_key = allow_key
+
+    def on_batch_begin(self, b:int, data:Dict[str,Any]) -> Dict[str,Any]:
+        if data[self.allow_key][0] == 'train' and np.random.rand() >= self.p:
+            for k in self.keys:
+                data[k] = data[k].transpose(-1,-2)
+        return data
+
+class MixUpHook(Hook):
+    def __init__(self, key, alpha=1.0, device='cuda'):
+        super().__init__(self.__class__.__name__)
+        self.key = key
+        self.alpha = alpha
+        self.device = device
+        self.is_train = False
+
+    def on_train_begin(self):
+        self.is_train = True
+    
+    def on_validation_begin(self):
+        self.is_train = False
+
+    def mixup_data(self, x):
+        if self.alpha > 0:
+            lam = np.random.beta(self.alpha, self.alpha)
+        else:
+            lam = 1
+
+        batch_size = x.size()[0]
+        index = torch.randperm(batch_size).to(self.device)
+        mixed_x = lam * x + (1 - lam) * x[index, :]
+
+        return mixed_x, index, lam
+
+    def on_batch_begin(self, b:int, data:Dict[str,Any]) -> Dict[str,Any]:
+        if self.is_train:
+            mixed_x, idx, lam = self.mixup_data(data[self.key])
+            data[self.key] = mixed_x
+            data['idx'] = idx
+            data['lam'] = lam
+        return data
+
+def fire_and_forget(f):
+    def wrapped(*args, **kwargs):
+        return asyncio.get_event_loop().run_in_executor(None, f, *args, *kwargs)
+
+    return wrapped
+
+@fire_and_forget
+def save_img(imgs, paths, save_path):
+    for img, path in zip(imgs, paths):
+        img = (img.transpose(1,2,0) * np.array([0.229, 0.224, 0.225])) + np.array([0.485, 0.456, 0.406])
+        if save_path is not None:
+            name = path.split('/')[-1]
+            path = save_path + name
+            cv2.imwrite(path, img * 255)
+
+class FGSMHook(Hook):
+    def __init__(self, key='img', epsilon=0.05, save_path=None):
+        super().__init__(self.__class__.__name__)
+        self.key = key
+        self.epsilon = epsilon
+        self.save_path = save_path
+        # self.pool = Pool(processes=16)
+
+    def on_batch_end(self, b, data):
+        fgsm_img = self.fgsm_attack(data['img'], self.epsilon, data['img'].grad.data)
+        fgsm_img = data['img'].detach().cpu().numpy()
+        save_img(fgsm_img, data['path'], self.save_path) 
+
+        return data
+
+    def fgsm_attack(self, image, epsilon, data_grad):
+        # Collect the element-wise sign of the data gradient
+        sign_data_grad = data_grad.sign()
+        # Create the perturbed image by adjusting each pixel of the input image
+        perturbed_image = image + epsilon*sign_data_grad
+        # Adding clipping to maintain [0,1] range
+        perturbed_image = torch.clamp(perturbed_image, 0, 1)
+        # Return the perturbed image
+        return perturbed_image
+
+class SaveImgHook(Hook):
+    def __init__(self, keys, path, im_name, b):
+        super().__init__(self.__class__.__name__)
+        self.keys = keys
+        self.path = path
+        self.im_name = im_name
+        self.b = b
+        self.epoch = 0
+        
+    def on_batch_end(self, b:int, data:dict) -> None: 
+        if b == self.b:
+            i_len = int(data[self.keys[0]].shape[0] / len(self.keys))
+            imgs = []
+            for i in range(i_len):
+                for k in self.keys:
+                    imgs.append(data[k][i])
+            vutils.save_image(imgs, f'{self.path}/{self.im_name}_{self.epoch}.png')
+            self.epoch += 1
+        return data    
+
 class DelTensor(Hook):
     def __init__(self):
         super().__init__(self.__class__.__name__)
@@ -34,6 +171,7 @@ class DelTensor(Hook):
         for v in data.values():
             if isinstance(v, torch.Tensor):
                 del v
+        return data
 
 class GetDataHook(Hook):
     def __init__(self, keys):
@@ -95,15 +233,16 @@ class TimerHook(Hook):
     def on_validation_end(self) -> None: 
         self.valid_time.append(time.time() - self.valid_begin)
 
-    def on_batch_begin(self, b:int, data:Dict[str,Any]) -> Dict[str,Any]:
+    def on_batch_begin(self, b:int) -> None:
         self.batch_begin = time.time()
+
+    def on_batch_end(self, b:int, data) -> None: 
+        self.batch_time.append(time.time() - self.batch_begin)
         return data
 
-    def on_batch_end(self, b:int, data:Dict[str,Any]) -> None: 
-        self.batch_time.append(time.time() - self.batch_begin)
-
 class StatTracker(Hook):
-    def __init__(self, collect_stats:Dict[str,Callable[[Dict], float]],  save_csv:str=None, prefix_train:str='t_', prefix_valid:str='v_', model_n:int=0):
+    def __init__(self, collect_stats:Dict[str,Callable[[Dict], float]],  save_csv:str=None, 
+            prefix_train:str='t_', prefix_valid:str='v_', model_n:int=0):
         super().__init__(self.__class__.__name__)
         self.model_n:int = model_n
         self.collect_stats = collect_stats
@@ -124,16 +263,18 @@ class StatTracker(Hook):
         self.prefix = self.prefix_valid
 
     def on_epoch_begin(self, e: int) -> None:
-        self.stat_runner:Dict = defaultdict(list)
         if self.stats['epoch'] == []:
             self.stats['epoch'].append(0)
         else:
             self.stats['epoch'].append(self.stats['epoch'][-1] + 1)
         self.stats['model'].append(self.model_n)
 
+        for stat in self.collect_stats:
+            self.collect_stats[stat].on_epoch_begin()
+
     def on_epoch_end(self, e:int) -> None:
-        for stat in self.stat_runner:
-            self.stats[stat].append(np.mean(self.stat_runner[stat]))
+        for stat in self.collect_stats:
+            self.stats[stat].append(self.collect_stats[stat].get_result())
     
         if self.save_csv is not None:
             pd.DataFrame(data=self.stats).to_csv(self.save_csv, index=False)
@@ -147,7 +288,9 @@ class StatTracker(Hook):
 
     def on_batch_end(self, b:int, data:Dict[str, Any]) -> None:
         for stat in self.collect_stats:
-            self.stat_runner[self.prefix + stat].append(self.collect_stats[stat](data))
+            if self.prefix in stat: 
+                self.collect_stats[stat].on_batch_result(data)
+        return data
 
     def get_last_stats(self) -> Dict[str, float]:
         return {k:self.stats[k][-1] for k in self.stats.keys()}
@@ -265,6 +408,7 @@ class CheckPointHook(Hook):
         super().__init__(self.__class__.__name__)
         self.model = model
         self.path = path
+        self.count = 0
 
     def save_model(self, path:str=None):
         if path is None: path = self.path
@@ -285,6 +429,11 @@ class CheckPointHook(Hook):
         if self.path is not None and os.path.exists(self.path):
             os.remove(self.path)
         return self
+
+    def checkpoint(self):
+        self.save_model(self.path + f'ckpt_{self.count}')
+        self.count += 1
+
 
 class SaveBestHook(CheckPointHook):
     up   = 'up'
@@ -339,6 +488,7 @@ class SaveBestHook(CheckPointHook):
         return self
 
 
+
 class EndEarlyHook(Hook):
     def __init__(self, key:str='v_acc', wait:int=10, best_func:Callable=np.max, stat_tracker:StatTracker=None, trainer:Trainer=None):
         super().__init__(self.__class__.__name__)
@@ -368,3 +518,51 @@ class LRChangeEpochHook(Hook):
     def on_epoch_end(self, e:int)-> None:
         if e >= self.epoch:
             adjust_learning_rate(self.optimizer, self.lr)
+
+
+class EpochSchedulerHook(Hook):
+    def __init__(self, optimizer):
+        super().__init__(self.__class__.__name__)
+        self.optimizer = optimizer
+    
+    def on_epoch_end(self, e:int)-> None:
+        self.optimizer.step()
+
+class StatHook(Hook):
+    def get_stat_batch(self): pass
+
+    def get_stat_epoch(self): pass
+
+class FuncStatHook(StatHook):
+    def __init__(self, key, function, agg_function):
+        self.key = key
+        self.function = function
+        self.agg_function = agg_function
+        self.current_epoch = []
+        self.history = []
+
+    def on_batch_end_data(self, data):
+        self.current_epoch.append(self.function(data[self.key]))
+        return data
+    
+    def on_batch_end(self, b, data):
+        self.history.append(self.current_epoch)
+        self.current_epoch = []
+        return data
+
+    def get_stat_batch(self):
+        return self.current_epoch[-1]
+
+    def get_stat_epoch(self):
+        return self.agg_function(self.current_epoch)
+
+
+class LossStatHook(FuncStatHook):
+    def __init__(self, key='loss'):
+        super(self).__init__(self, key, np.mean, np.mean)
+
+class AccStatHook(FuncStatHook):
+    def __init__(self, key='loss'):
+        super(self).__init__(self, key, np.mean, np.mean)
+
+
