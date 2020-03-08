@@ -20,6 +20,7 @@ class ElasticTrainer(object):
             runner = self.runner
         
         runner.on_fit_begin(epochs, self.trainer_dict)
+
         for e in range(epochs):
             runner.on_epoch_begin(e, self.trainer_dict)
             for step in self.order:

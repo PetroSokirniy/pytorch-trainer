@@ -56,6 +56,7 @@ class SaveBestHook(CheckPointHook):
         self.bast_path = f'{path}_b'
 
     def on_fit_begin(self, epochs, trainer_data:Dict[str,Any]) -> Dict[str,Any]:
+        super().on_fit_begin(epochs, trainer_data)
         if self.stat_key not in trainer_data:
             return
         
