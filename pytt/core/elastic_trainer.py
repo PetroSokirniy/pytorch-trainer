@@ -23,13 +23,20 @@ class ElasticTrainer(object):
         for e in range(epochs):
             runner.on_epoch_begin(e, self.trainer_dict)
             for step in self.order:
+
                 step_data = self.trainer_dict[step]
                 step_data[NAME] = step
+
+                self.trainer_dict[CURRENT_STEP] = step_data
+                self.trainer_dict[CURRENT_STEP_NAME] = step
+
                 runner.on_step_begin(step, step_data)
+
                 b = 0
                 for batch_data in step_data[DATE_ITER]:
                     runner.on_batch(b, batch_data, step_data)
                     b += 1
+
                 runner.on_step_end(step, step_data)
             runner.on_epoch_end(e, self.trainer_dict)
         runner.on_fit_end(epochs, self.trainer_dict)

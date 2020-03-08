@@ -21,3 +21,12 @@ class ElasticHook(object):
     def on_batch(self, b:int, batch_data:Dict[str,Any], step_data:Dict[str,Any]): return batch_data, step_data
       
     def hook(self, args=None) -> Any: pass
+
+class Temp(object):
+    def __init__(self, a):
+        self.a = a
+    def func(self, t):
+        print(t)
+    def __getattribute__(self, instance, owner=None):
+        print('here', instance, owner, self)
+        return object.__getattribute__(self, instance)

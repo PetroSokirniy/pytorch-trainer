@@ -1,10 +1,9 @@
-from typing import List, Tuple, Any, Dict, Callable
+from typing import List, Any, Dict, Callable
 from collections import namedtuple
 
-from .core import *
+from .core import ElasticHook
 from .utils import identity
 
-import torch
 import numpy as np
 
 
@@ -26,6 +25,7 @@ class BasicAccumulator(ElasticHook):
     def on_step_end(self, step:str, step_data:Dict[str,Any]) -> Dict[str,Any]: 
         step_data[self.step_key] = self.red_func(step_data[self.temp_key])
 
+
 class MultiAccumulator(ElasticHook):
     def __init__(self, batch:Dict[str,Callable], step:Dict[str,Callable]):
         super().__init__(self.__class__.__name__)
@@ -43,6 +43,7 @@ class MultiAccumulator(ElasticHook):
     def on_step_end(self, step:str, step_data:Dict[str,Any]) -> Dict[str,Any]: 
         for bk, sk in zip(self.batch.keys(), self.step.keys()):
             step_data[sk] = self.step[bk](step_data[f'{bk}_{sk}'])
+
 
 class FuncAccumulator(ElasticHook):
     def __init__(self, batch:Dict[str,Callable], reducer:List[Callable]):

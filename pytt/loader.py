@@ -1,13 +1,11 @@
-from .core import *
+from .core import ElasticHook
 
-import torch
-from torch.utils.data import DataLoader, Dataset
-import pandas as pd
-import numpy as np
+from torch.utils.data import DataLoader
 
-from fastprogress import force_console_behavior
 import fastprogress
+from fastprogress import force_console_behavior
 master_bar, progress_bar = force_console_behavior()
+
 
 class BasicDataIter(ElasticHook):
     def __init__(self, loader_key=LOADER, **kwargs):
