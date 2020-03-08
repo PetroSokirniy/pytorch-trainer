@@ -36,44 +36,46 @@ class Trainer(object):
             self.hooks.on_epoch_begin(e)
             if train is not None:
                 self.hooks.on_train_begin()
-                self._train_loop(data=train, loss_fn=self.loss_fn, optimizer=self.optimizer, 
+                self._loop(data=train, loss_fn=self.loss_fn, optimizer=self.optimizer, 
                     batch_sz=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=num_workers)
                 self.hooks.on_train_end()
 
             if valid is not None:
-                self._validation(e, valid, batch_sz if batch_sz_valid is None else batch_sz_valid)
+                self.hooks.on_validation_begin()
+                self._loop(valid, loss_fn=self.loss_fn, batch_sz=batch_sz if batch_sz_valid is None else batch_sz_valid, 
+                    shuffle=False, num_workers=num_workers)
+                self.hooks.on_validation_end()
 
             self.hooks.on_epoch_end(e)
 
         self.hooks.on_fit_end()
 
-    def _validation(self, epoch, valid, batch_sz) -> None:
-        self.hooks.on_validation_begin()
-        self._train_loop(data=valid, loss_fn=self.loss_fn, optimizer=None, batch_sz=batch_sz, shuffle=False)
-        self.hooks.on_validation_end()
-
-    def _train_loop(self, data, optimizer=None, loss_fn=None, batch_sz=32, shuffle=True, sampler=None, num_workers=4) -> None:
+    def _loop(self, data, optimizer=None, loss_fn=None, batch_sz=32, shuffle=True, sampler=None, num_workers=4) -> None:
         shuffle = shuffle and sampler is None
         self.clean()
         # for data in tqdm(DataLoader(data, batch_size=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=4),  leave=False):
         # tqdm has a problem with notebooks and a second inner loop
-        for b, data in enumerate(DataLoader(data, batch_size=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=num_workers)):
+        for b, batch_data in enumerate(DataLoader(data, batch_size=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=num_workers)):
             if self.stop:
                 break
-            data = self.hooks.on_batch_begin(b, data) 
-            data = self.model(data)
-            data = self.hooks.on_output_data(data)
-            if loss_fn is not None:
-                loss = loss_fn(data)
-                if optimizer is not None:
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-            else:
-                loss = None
-            data['loss'] = loss
-            
-            
-            self.hooks.on_batch_end(b, data)
-            b += 1
+            self._batch(b, batch_data, loss_fn, optimizer)
         self.clean()
+
+    def run(self, data, batch_sz=32, shuffle=True, sampler=None, num_workers=4):
+        self._loop(data, batch_sz=batch_sz, shuffle=shuffle, sampler=sampler, num_workers=num_workers)
+
+    def _batch(self, b, data, loss_fn, optimizer):
+        data = self.hooks.on_batch_begin(b, data) 
+        data = self.model(data)
+        data = self.hooks.on_output_data(data)
+        if loss_fn is not None:
+            loss = loss_fn(data)
+            if optimizer is not None:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+        else:
+            loss = None
+        data['loss'] = loss
+        self.hooks.on_batch_end(b, data)
+
